@@ -8,7 +8,9 @@
 2. `supabase/rpc_check_reservation_overlap.sql`
 3. `supabase/rpc_repeat_group_operations.sql`
 4. `supabase/rpc_flutter_reservation_core.sql`
-5. `supabase/rls_allow_common_code_read.sql` (선택)
+5. `supabase/rpc_change_reservation_status.sql` (결재·완료 권한 검증)
+6. `supabase/trigger_reservation_overlap_guard.sql` (`duplicate_yn=120` 서버 최종 중복 차단·레이스 방지)
+7. `supabase/rls_allow_common_code_read.sql` (선택)
 
 ## 3. 실행 전 체크
 1. Supabase 프로젝트/환경(dev/stg/prod) 확인
@@ -20,15 +22,19 @@
 2. 중복 검사 RPC 배포 (`rpc_check_reservation_overlap.sql`)
 3. 반복 그룹 RPC 배포 (`rpc_repeat_group_operations.sql`)
 4. Flutter 연동 RPC 배포 (`rpc_flutter_reservation_core.sql`)
-5. RLS 정책 적용 (`rls_allow_common_code_read.sql`, 필요 시)
+5. 결재 상태 RPC 배포 (`rpc_change_reservation_status.sql`)
+6. 중복 방지 트리거 배포 (`trigger_reservation_overlap_guard.sql`)
+7. RLS 정책 적용 (`rls_allow_common_code_read.sql`, 필요 시)
 
 ## 5. 권장 실행 명령 체크리스트
 - [ ] 1단계 스키마 완료
 - [ ] 2단계 overlap RPC 완료
 - [ ] 3단계 repeat group RPC 완료
 - [ ] 4단계 flutter core RPC 완료
-- [ ] 5단계 RLS 정책 점검
-- [ ] 6단계 시나리오 테스트 완료
+- [ ] 5단계 결재 상태 RPC 완료
+- [ ] 6단계 중복 방지 트리거 완료
+- [ ] 7단계 RLS 정책 점검
+- [ ] 8단계 시나리오 테스트 완료
 
 ## 6. 각 SQL 실행 후 바로 돌릴 테스트 쿼리
 
@@ -118,6 +124,27 @@ from public.rpc_split_series_this_occurrence_move(
   '2026-04-07T14:30:00+09:00'::timestamptz,
   '2026-04-07T15:30:00+09:00'::timestamptz
 );
+```
+
+### 6-5. `rpc_change_reservation_status.sql` 실행 후
+```sql
+select routine_name
+from information_schema.routines
+where routine_schema = 'public'
+  and routine_name in (
+    'rpc_change_reservation_status',
+    'rpc_change_reservation_status_many'
+  )
+order by routine_name;
+```
+
+### 6-6. `trigger_reservation_overlap_guard.sql` 실행 후
+```sql
+select tgname
+from pg_trigger
+where tgrelid = 'public.mr_reservations'::regclass
+  and not tgisinternal
+  and tgname = 'tr_reservation_overlap_guard';
 ```
 
 ## 7. 실패 시 빠른 점검

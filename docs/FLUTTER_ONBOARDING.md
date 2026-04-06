@@ -33,6 +33,8 @@
 ## 7. 체크리스트
 - [ ] Supabase URL/anon key 연결
 - [ ] 인증/권한 흐름 확인
-- [ ] RPC 호출 공통 에러 처리(`E_OVERLAP` 등)
+- [ ] RPC 호출 공통 에러 처리(`E_OVERLAP`, `[E_NOT_APPROVER]`, `[E_INVALID_STATE]` 등)
+- [x] 결재: `rpc_change_reservation_status` (예약 상세·`ReservationEditorPage`) — `docs/RPC_CONTRACT.md` §3 / §3a
+- [ ] (선택) 그리드 일괄 시에만 `rpc_change_reservation_status_many` — Flutter에 해당 UI 없으면 생략
 - [ ] 반복 this/all 시나리오 테스트
 - [ ] 대표행 분리/재그룹핑 시나리오 테스트

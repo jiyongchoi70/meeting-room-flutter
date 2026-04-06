@@ -26,6 +26,7 @@ DECLARE
   v_create_user text;
   v_next_rep_id uuid;
   v_conflict text;
+  v_duplicate_yn integer;
 BEGIN
   IF p_actor_uid IS NULL OR trim(p_actor_uid) = '' THEN
     RAISE EXCEPTION '로그인 사용자 정보가 없습니다.';
@@ -55,20 +56,26 @@ BEGIN
     RAISE EXCEPTION '본인 예약만 수정할 수 있습니다.';
   END IF;
 
-  -- 중복 검사(반려 제외, 자기 자신 제외)
-  SELECT
-    (EXTRACT(MONTH FROM m.start_ymd)::int)::text || ' 월 ' || (EXTRACT(DAY FROM m.start_ymd)::int)::text || ' 일'
-  INTO v_conflict
-  FROM mr_reservations m
-  WHERE m.room_id = v_room_id
-    AND (m.status IS NULL OR m.status <> 130)
-    AND m.reservation_id <> p_reservation_id
-    AND v_start_ymd < m.end_ymd
-    AND v_end_ymd > m.start_ymd
-  LIMIT 1;
+  SELECT mr.duplicate_yn INTO v_duplicate_yn
+  FROM mr_room mr
+  WHERE mr.room_id = v_room_id;
 
-  IF v_conflict IS NOT NULL THEN
-    RAISE EXCEPTION '% 중복이 됩니다.', v_conflict;
+  -- duplicate_yn = 110 만 중복 허용. 그 외(NULL·120 등)는 검사.
+  IF v_duplicate_yn IS DISTINCT FROM 110 THEN
+    SELECT
+      (EXTRACT(MONTH FROM m.start_ymd)::int)::text || ' 월 ' || (EXTRACT(DAY FROM m.start_ymd)::int)::text || ' 일'
+    INTO v_conflict
+    FROM mr_reservations m
+    WHERE m.room_id = v_room_id
+      AND (m.status IS NULL OR m.status <> 130)
+      AND m.reservation_id <> p_reservation_id
+      AND v_start_ymd < m.end_ymd
+      AND v_end_ymd > m.start_ymd
+    LIMIT 1;
+
+    IF v_conflict IS NOT NULL THEN
+      RAISE EXCEPTION '% 중복이 됩니다.', v_conflict;
+    END IF;
   END IF;
 
   -- 대표행 분리: 대표를 떼면 남은 행들 새 대표로 재그룹핑
@@ -118,7 +125,7 @@ END;
 $$;
 
 COMMENT ON FUNCTION public.rpc_split_series_this_occurrence_save(text, uuid, jsonb)
-IS '이 일정 저장: 대표행 분리 시 follower 그룹 재배정 + 대상 단건 수정.';
+IS '이 일정 저장: 대표행 분리 시 follower 그룹 재배정 + 대상 단건 수정. duplicate_yn=110이 아니면 시간 중복 검사.';
 
 
 CREATE OR REPLACE FUNCTION public.rpc_split_series_this_occurrence_move(
@@ -138,6 +145,7 @@ DECLARE
   v_create_user text;
   v_next_rep_id uuid;
   v_conflict text;
+  v_duplicate_yn integer;
 BEGIN
   IF p_actor_uid IS NULL OR trim(p_actor_uid) = '' THEN
     RAISE EXCEPTION '로그인 사용자 정보가 없습니다.';
@@ -164,20 +172,25 @@ BEGIN
     RAISE EXCEPTION '본인 예약만 이동할 수 있습니다.';
   END IF;
 
-  -- 중복 검사(반려 제외, 자기 자신 제외)
-  SELECT
-    (EXTRACT(MONTH FROM m.start_ymd)::int)::text || ' 월 ' || (EXTRACT(DAY FROM m.start_ymd)::int)::text || ' 일'
-  INTO v_conflict
-  FROM mr_reservations m
-  WHERE m.room_id = v_room_id
-    AND (m.status IS NULL OR m.status <> 130)
-    AND m.reservation_id <> p_reservation_id
-    AND p_start_ymd < m.end_ymd
-    AND p_end_ymd > m.start_ymd
-  LIMIT 1;
+  SELECT mr.duplicate_yn INTO v_duplicate_yn
+  FROM mr_room mr
+  WHERE mr.room_id = v_room_id;
 
-  IF v_conflict IS NOT NULL THEN
-    RAISE EXCEPTION '% 중복이 됩니다.', v_conflict;
+  IF v_duplicate_yn IS DISTINCT FROM 110 THEN
+    SELECT
+      (EXTRACT(MONTH FROM m.start_ymd)::int)::text || ' 월 ' || (EXTRACT(DAY FROM m.start_ymd)::int)::text || ' 일'
+    INTO v_conflict
+    FROM mr_reservations m
+    WHERE m.room_id = v_room_id
+      AND (m.status IS NULL OR m.status <> 130)
+      AND m.reservation_id <> p_reservation_id
+      AND p_start_ymd < m.end_ymd
+      AND p_end_ymd > m.start_ymd
+    LIMIT 1;
+
+    IF v_conflict IS NOT NULL THEN
+      RAISE EXCEPTION '% 중복이 됩니다.', v_conflict;
+    END IF;
   END IF;
 
   -- 대표행 분리: 대표를 떼면 남은 행들 새 대표로 재그룹핑
@@ -212,7 +225,7 @@ END;
 $$;
 
 COMMENT ON FUNCTION public.rpc_split_series_this_occurrence_move(text, uuid, timestamptz, timestamptz)
-IS '이 일정 이동: 대표행 분리 시 follower 그룹 재배정 + 대상 단건 이동.';
+IS '이 일정 이동: 대표행 분리 시 follower 그룹 재배정 + 대상 단건 이동. duplicate_yn=110이 아니면 시간 중복 검사.';
 
 
 GRANT EXECUTE ON FUNCTION public.rpc_split_series_this_occurrence_save(text, uuid, jsonb) TO authenticated;

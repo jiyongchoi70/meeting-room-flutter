@@ -63,6 +63,10 @@ class _LoginPageState extends State<LoginPage> {
               TextField(
                 controller: _pwCtrl,
                 obscureText: true,
+                textInputAction: TextInputAction.done,
+                onSubmitted: (_) {
+                  if (!_loading) _login();
+                },
                 decoration: const InputDecoration(labelText: '비밀번호'),
               ),
               const SizedBox(height: 16),

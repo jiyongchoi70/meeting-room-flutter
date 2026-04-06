@@ -8,6 +8,8 @@ class CalendarEventModel {
   final String? repeatGroupId;
   final int? status;
   final String? createUser;
+  /// 반려(130) 시 승인자가 남긴 사유 (`mr_reservations.return_comment`).
+  final String? returnComment;
 
   CalendarEventModel({
     required this.id,
@@ -19,6 +21,7 @@ class CalendarEventModel {
     this.repeatGroupId,
     this.status,
     this.createUser,
+    this.returnComment,
   });
 
   factory CalendarEventModel.fromMap(Map<String, dynamic> map) {
@@ -32,6 +35,7 @@ class CalendarEventModel {
       repeatGroupId: map['repeat_group_id'] as String?,
       status: (map['status'] as num?)?.toInt(),
       createUser: map['create_user'] as String?,
+      returnComment: map['return_comment'] as String?,
     );
   }
 }
