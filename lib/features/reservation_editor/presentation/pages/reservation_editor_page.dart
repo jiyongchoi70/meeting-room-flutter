@@ -9,9 +9,14 @@ import '../../../../data/datasources/room_remote_ds.dart';
 import '../../../../data/models/calendar_event_model.dart';
 import '../../../../data/models/meeting_room_model.dart';
 import '../../../../data/models/reservation_booker_info.dart';
+import '../../../../data/reservation_room_end_validation.dart';
+import '../../../../data/room_reservation_policy.dart';
 import '../../../calendar/presentation/widgets/reservation_status_chip.dart';
+import '../models/repeat_schedule_selection.dart';
+import '../widgets/allday_calendar_picker.dart';
 import '../widgets/inline_datetime_wheel_picker.dart';
 import '../widgets/meeting_room_card_styles.dart';
+import 'repeat_settings_page.dart';
 
 class ReservationEditorPage extends StatefulWidget {
   const ReservationEditorPage({super.key, required this.event});
@@ -25,6 +30,9 @@ enum _ExpandedPicker { none, start, end }
 enum _SaveScope { single, thisOnly, all }
 enum _DeleteScope { single, thisAndFollowing, all }
 
+/// [ReservationCreatePage] 하단 버튼과 동일 높이.
+const double _kFormBarButtonHeight = 48;
+
 class _ReservationEditorPageState extends State<ReservationEditorPage> {
   final _ds = ReservationRemoteDs();
   final _roomDs = RoomRemoteDs();
@@ -34,6 +42,10 @@ class _ReservationEditorPageState extends State<ReservationEditorPage> {
   late TextEditingController _titleCtrl;
   late DateTime _start;
   late DateTime _end;
+  late bool _allDay;
+  late RepeatScheduleSelection _repeatSel;
+  int _startDayPickerKey = 0;
+  int _endDayPickerKey = 0;
   bool _saving = false;
   bool _deleting = false;
   bool _statusChanging = false;
@@ -49,13 +61,18 @@ class _ReservationEditorPageState extends State<ReservationEditorPage> {
   List<MeetingRoom> _rooms = const [];
   bool _loadingRooms = false;
 
+  DateTime _dateOnly(DateTime d) => DateTime(d.year, d.month, d.day);
+
+  /// 시작·종료가 같은 달력 날이면 반복 요약·설정 표시 (멀티데이는 반복 없음).
+  bool get _canConfigureRepeat => _dateOnly(_start) == _dateOnly(_end);
+
   /// 신청·완료일 때 일정 값(날짜·시간) 강조 스타일.
   bool get _scheduleValueEmphasized {
     final s = widget.event.status;
     return s == kReservationStatusApplied || s == kReservationStatusCompleted;
   }
 
-  /// 신청·완료일 때 휠 피커로 시각 수정 가능.
+  /// 신청·완료·본인·저장 가능 시: 시간/하루 종일·반복·시작·종료 편집.
   bool get _canEditDateTime =>
       _scheduleValueEmphasized && _canEditReservationFields;
 
@@ -101,7 +118,33 @@ class _ReservationEditorPageState extends State<ReservationEditorPage> {
     _titleCtrl = TextEditingController(text: widget.event.title);
     _start = widget.event.start.toLocal();
     _end = widget.event.end.toLocal();
+    _allDay = widget.event.alldayYn == 'Y';
+    _repeatSel = RepeatScheduleSelection.fromStoredReservation(
+      reservationStart: _start,
+      reservationEnd: _end,
+      repeatId: widget.event.repeatId,
+      repeatEndYmdRaw: widget.event.repeatEndYmd,
+      repeatCycle: widget.event.repeatCycle,
+      repeatUser: widget.event.repeatUser,
+      weekdayFlags: widget.event.weekdayFlags,
+    );
     _bootstrapInitialData();
+  }
+
+  void _clampRepeatUntilToEnd() {
+    final endDay = _dateOnly(_end);
+    if (_repeatSel.repeatUntil.isBefore(endDay)) {
+      _repeatSel = _repeatSel.copyWith(repeatUntil: endDay);
+    }
+  }
+
+  void _clearRepeatIfSpanningDays() {
+    if (!_canConfigureRepeat) {
+      _repeatSel = RepeatScheduleSelection.initial(
+        reservationStart: _start,
+        reservationEnd: _end,
+      );
+    }
   }
 
   /// 승인 가능 여부·회의실 목록·예약자 정보를 **병렬** 조회 후 한 번에 반영 (순차 로딩 완화).
@@ -232,14 +275,52 @@ class _ReservationEditorPageState extends State<ReservationEditorPage> {
       return;
     }
 
-    final payload = {
+    if (_canConfigureRepeat && _repeatSel.isRepeating) {
+      final endDay = _dateOnly(_end);
+      if (_repeatSel.repeatUntil.isBefore(endDay)) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('반복 종료일은 종료 일시 이후 날짜여야 합니다.')),
+        );
+        return;
+      }
+    }
+
+    final endYmdForPolicy = (_canConfigureRepeat && _repeatSel.isRepeating)
+        ? RepeatScheduleSelection.repeatEndYmdForDb(_repeatSel.repeatUntil)
+        : RepeatScheduleSelection.repeatEndYmdForDb(_end);
+    final prefetch = await Future.wait<Object?>([
+      _roomDs.fetchRoomReservationPolicy(_selectedRoomId),
+      _ds.canActorApproveForRoom(_selectedRoomId),
+    ]);
+    if (!mounted) return;
+    final policy = prefetch[0] as RoomReservationPolicy?;
+    final skipPolicy = prefetch[1] as bool;
+    if (policy != null) {
+      final msg = validateReservationEndAgainstRoomPolicy(
+        endYmdDigits: endYmdForPolicy,
+        policy: policy,
+        skipForPrivilegedUser: skipPolicy,
+      );
+      if (msg != null) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+        return;
+      }
+    }
+
+    final payload = <String, dynamic>{
       'title': title,
       'room_id': _selectedRoomId,
-      'allday_yn': 'N',
+      'allday_yn': _allDay ? 'Y' : 'N',
       'start_ymd': _start.toUtc().toIso8601String(),
       'end_ymd': _end.toUtc().toIso8601String(),
-      // 필요 시 repeat 필드 포함
     };
+    if (_canConfigureRepeat) {
+      if (_repeatSel.isRepeating) {
+        payload.addAll(_repeatSel.repeatFieldsForPayload());
+      } else {
+        payload.addAll(RepeatScheduleSelection.clearedRepeatPayloadFields());
+      }
+    }
     final isRepeating =
         (widget.event.repeatGroupId != null &&
         widget.event.repeatGroupId!.isNotEmpty);
@@ -288,32 +369,11 @@ class _ReservationEditorPageState extends State<ReservationEditorPage> {
     }
   }
 
-  Future<String?> _askStatusChangeScope() {
+  /// 승인·반려는 반복 시리즈가 있으면 항상 전체에 동일 적용 (`all`). 단건은 `this`.
+  String _statusChangeScopeForRpc() {
     final gid = widget.event.repeatGroupId;
-    if (gid == null || gid.trim().isEmpty) {
-      return Future.value('this');
-    }
-    return showDialog<String?>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('반복 일정'),
-        content: const Text('어느 범위로 처리할까요?'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('취소'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, 'this'),
-            child: const Text('이 일정'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, 'all'),
-            child: const Text('모든 일정'),
-          ),
-        ],
-      ),
-    );
+    if (gid == null || gid.trim().isEmpty) return 'this';
+    return 'all';
   }
 
   /// 반려 사유 입력 모달. 확인 시 입력 문자열(빈 문자열 가능), 취소·× 시 `null`.
@@ -335,8 +395,7 @@ class _ReservationEditorPageState extends State<ReservationEditorPage> {
       returnComment = c.isEmpty ? null : c;
     }
 
-    final scope = await _askStatusChangeScope();
-    if (!mounted || scope == null) return;
+    final scope = _statusChangeScopeForRpc();
 
     setState(() => _statusChanging = true);
     try {
@@ -483,11 +542,21 @@ class _ReservationEditorPageState extends State<ReservationEditorPage> {
       if (!_end.isAfter(_start)) {
         _end = _start.add(const Duration(minutes: 30));
       }
+      _clampRepeatUntilToEnd();
+      _clearRepeatIfSpanningDays();
     });
   }
 
   void _toggleStartPicker() {
     if (!_canTapScheduleValue || _anyBusy) return;
+    if (_allDay) {
+      setState(() {
+        _expanded =
+            _expanded == _ExpandedPicker.start ? _ExpandedPicker.none : _ExpandedPicker.start;
+        _startDayPickerKey++;
+      });
+      return;
+    }
     setState(() {
       if (_expanded == _ExpandedPicker.start) {
         _expanded = _ExpandedPicker.none;
@@ -500,6 +569,14 @@ class _ReservationEditorPageState extends State<ReservationEditorPage> {
 
   void _toggleEndPicker() {
     if (!_canTapScheduleValue || _anyBusy) return;
+    if (_allDay) {
+      setState(() {
+        _expanded =
+            _expanded == _ExpandedPicker.end ? _ExpandedPicker.none : _ExpandedPicker.end;
+        _endDayPickerKey++;
+      });
+      return;
+    }
     setState(() {
       if (_expanded == _ExpandedPicker.end) {
         _expanded = _ExpandedPicker.none;
@@ -511,13 +588,131 @@ class _ReservationEditorPageState extends State<ReservationEditorPage> {
   }
 
   String _scheduleDisplayText(DateTime dt) {
+    if (_allDay) return _displayFmtDate.format(dt);
     return '${_displayFmtDate.format(dt)} ${_displayFmtTime.format(dt)}';
   }
 
   void _onEndWheelChanged(DateTime v) {
     setState(() {
       _end = v.isAfter(_start) ? v : _start.add(const Duration(minutes: 30));
+      _clampRepeatUntilToEnd();
+      _clearRepeatIfSpanningDays();
     });
+  }
+
+  void _setAllDay(bool allDay) {
+    setState(() {
+      _allDay = allDay;
+      _expanded = _ExpandedPicker.none;
+    });
+  }
+
+  void _applyAllDayStartCalendar(DateTime picked) {
+    setState(() {
+      _start = DateTime(picked.year, picked.month, picked.day, _start.hour, _start.minute);
+      final dStart = DateTime(_start.year, _start.month, _start.day);
+      final dEnd = DateTime(_end.year, _end.month, _end.day);
+      if (dEnd.isBefore(dStart)) {
+        _end = DateTime(_start.year, _start.month, _start.day, _end.hour, _end.minute);
+      }
+      _clampRepeatUntilToEnd();
+      _clearRepeatIfSpanningDays();
+    });
+  }
+
+  void _applyAllDayEndCalendar(DateTime picked) {
+    setState(() {
+      _end = DateTime(picked.year, picked.month, picked.day, _end.hour, _end.minute);
+      final dStart = DateTime(_start.year, _start.month, _start.day);
+      final dEnd = DateTime(_end.year, _end.month, _end.day);
+      if (dEnd.isBefore(dStart)) {
+        _start = DateTime(_end.year, _end.month, _end.day, _start.hour, _start.minute);
+      }
+      _clampRepeatUntilToEnd();
+      _clearRepeatIfSpanningDays();
+    });
+  }
+
+  Future<void> _openRepeatSettings() async {
+    if (!_canEditDateTime || _anyBusy) return;
+    final result = await Navigator.push<RepeatScheduleSelection>(
+      context,
+      MaterialPageRoute(
+        builder: (ctx) => RepeatSettingsPage(
+          reservationStart: _start,
+          reservationEnd: _end,
+          initial: _repeatSel,
+        ),
+      ),
+    );
+    if (result != null && mounted) {
+      setState(() => _repeatSel = result);
+    }
+  }
+
+  Widget _timeAllDaySegment(BuildContext context) {
+    final button = SegmentedButton<bool>(
+      style: ButtonStyle(
+        visualDensity: VisualDensity.standard,
+        tapTargetSize: MaterialTapTargetSize.padded,
+        minimumSize: WidgetStateProperty.all(const Size(0, _kFormBarButtonHeight)),
+        padding: WidgetStateProperty.all(const EdgeInsets.symmetric(horizontal: 12)),
+      ),
+      showSelectedIcon: false,
+      segments: const [
+        ButtonSegment<bool>(value: false, label: Text('시간')),
+        ButtonSegment<bool>(value: true, label: Text('하루 종일')),
+      ],
+      selected: {_allDay},
+      onSelectionChanged: (v) => _setAllDay(v.first),
+    );
+    return Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: Center(
+        child: _canEditDateTime
+            ? button
+            : IgnorePointer(
+                child: Opacity(opacity: 0.88, child: button),
+              ),
+      ),
+    );
+  }
+
+  Widget _repeatSummaryRow(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final summary = _canConfigureRepeat
+        ? _repeatSel.summaryLine(reservationStart: _start)
+        : '반복 없음';
+    final canTap = _canEditDateTime && _canConfigureRepeat;
+    return Padding(
+      padding: const EdgeInsets.only(top: 12),
+      child: Material(
+        color: scheme.surfaceContainerHighest.withValues(alpha: 0.45),
+        borderRadius: BorderRadius.circular(20),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: canTap ? _openRepeatSettings : null,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    summary,
+                    style: Theme.of(context).textTheme.bodyLarge,
+                  ),
+                ),
+                if (canTap)
+                  Icon(
+                    Icons.chevron_right,
+                    color: scheme.onSurfaceVariant,
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   Widget _scheduleRow(
@@ -833,7 +1028,7 @@ class _ReservationEditorPageState extends State<ReservationEditorPage> {
                 value: _start,
                 onTap: _toggleStartPicker,
               ),
-              if (_canEditDateTime && _expanded == _ExpandedPicker.start)
+              if (_canEditDateTime && !_allDay && _expanded == _ExpandedPicker.start)
                 Padding(
                   padding: const EdgeInsets.only(bottom: 8),
                   child: InlineDateTimeWheelPicker(
@@ -842,13 +1037,22 @@ class _ReservationEditorPageState extends State<ReservationEditorPage> {
                     onChanged: _applyStart,
                   ),
                 ),
+              if (_allDay && _canEditDateTime && _expanded == _ExpandedPicker.start)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: AllDayCalendarPicker(
+                    key: ValueKey<int>(_startDayPickerKey),
+                    selectedDate: DateTime(_start.year, _start.month, _start.day),
+                    onDateChanged: _applyAllDayStartCalendar,
+                  ),
+                ),
               _scheduleRow(
                 context,
                 label: '종료',
                 value: _end,
                 onTap: _toggleEndPicker,
               ),
-              if (_canEditDateTime && _expanded == _ExpandedPicker.end)
+              if (_canEditDateTime && !_allDay && _expanded == _ExpandedPicker.end)
                 Padding(
                   padding: const EdgeInsets.only(bottom: 8),
                   child: InlineDateTimeWheelPicker(
@@ -857,6 +1061,17 @@ class _ReservationEditorPageState extends State<ReservationEditorPage> {
                     onChanged: _onEndWheelChanged,
                   ),
                 ),
+              if (_allDay && _canEditDateTime && _expanded == _ExpandedPicker.end)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: AllDayCalendarPicker(
+                    key: ValueKey<int>(_endDayPickerKey),
+                    selectedDate: DateTime(_end.year, _end.month, _end.day),
+                    onDateChanged: _applyAllDayEndCalendar,
+                  ),
+                ),
+              _timeAllDaySegment(context),
+              _repeatSummaryRow(context),
               _roomRow(context),
               _bookerRow(context),
               const SizedBox(height: 24),

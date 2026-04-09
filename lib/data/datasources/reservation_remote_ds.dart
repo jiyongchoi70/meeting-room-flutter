@@ -210,7 +210,10 @@ class ReservationRemoteDs {
     var query = _client
         .from('mr_reservations')
         .select(
-          'reservation_id, title, start_ymd, end_ymd, room_id, repeat_group_id, status, create_user, return_comment, mr_room(room_nm)',
+          'reservation_id, title, start_ymd, end_ymd, room_id, repeat_group_id, '
+          'status, create_user, return_comment, allday_yn, repeat_id, repeat_end_ymd, '
+          'repeat_cycle, repeat_user, sun_yn, mon_yn, tue_yn, wed_yn, thu_yn, fri_yn, sat_yn, '
+          'mr_room(room_nm)',
         )
         .gte('start_ymd', startDay)
         .lte('start_ymd', endDay);
@@ -320,16 +323,19 @@ class ReservationRemoteDs {
     }
 
     final policy = await getRoomConfirmAndDuplicate(roomId);
-    for (final o in occ) {
-      await assertNoOverlapIfRequired(
-        roomId: roomId,
-        startUtc: o.startUtc,
-        endUtc: o.endUtc,
-        duplicateYn: policy.duplicateYn,
-      );
-    }
-
-    final status = await resolveStatusForNewReservation(roomId);
+    final statusFuture = resolveStatusForNewReservation(roomId);
+    final overlapFutures = occ
+        .map(
+          (o) => assertNoOverlapIfRequired(
+            roomId: roomId,
+            startUtc: o.startUtc,
+            endUtc: o.endUtc,
+            duplicateYn: policy.duplicateYn,
+          ),
+        )
+        .toList(growable: false);
+    await Future.wait<dynamic>([...overlapFutures, statusFuture]);
+    final status = await statusFuture;
 
     Map<String, dynamic> baseRow(String s, String e, {String? groupId}) {
       final m = <String, dynamic>{
@@ -398,15 +404,19 @@ class ReservationRemoteDs {
           .update({'repeat_group_id': groupId}).eq('reservation_id', groupId);
     }
 
-    for (var i = 1; i < occ.length; i++) {
-      final o = occ[i];
-      await _client.from('mr_reservations').insert(
-            baseRow(
-              o.startUtc.toUtc().toIso8601String(),
-              o.endUtc.toUtc().toIso8601String(),
-              groupId: groupId,
-            ),
-          );
+    if (occ.length > 1) {
+      final bulk = <Map<String, dynamic>>[];
+      for (var i = 1; i < occ.length; i++) {
+        final o = occ[i];
+        bulk.add(
+          baseRow(
+            o.startUtc.toUtc().toIso8601String(),
+            o.endUtc.toUtc().toIso8601String(),
+            groupId: groupId,
+          ),
+        );
+      }
+      await _client.from('mr_reservations').insert(bulk);
     }
   }
 

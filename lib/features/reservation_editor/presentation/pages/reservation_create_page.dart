@@ -5,8 +5,11 @@ import 'package:intl/intl.dart';
 import '../../../../core/user_facing_error_message.dart';
 import '../../../../data/datasources/room_remote_ds.dart';
 import '../../../../data/datasources/reservation_remote_ds.dart';
+import '../../../../data/reservation_room_end_validation.dart';
+import '../../../../data/room_reservation_policy.dart';
 import '../../../../data/models/meeting_room_model.dart';
 import '../models/repeat_schedule_selection.dart';
+import '../widgets/allday_calendar_picker.dart';
 import '../widgets/inline_datetime_wheel_picker.dart';
 import '../widgets/meeting_room_card_styles.dart';
 import 'repeat_settings_page.dart';
@@ -277,8 +280,31 @@ class _ReservationCreatePageState extends State<ReservationCreatePage> {
       }
     }
 
+    final endYmdForPolicy = (_canConfigureRepeat && _repeatSel.isRepeating)
+        ? RepeatScheduleSelection.repeatEndYmdForDb(_repeatSel.repeatUntil)
+        : RepeatScheduleSelection.repeatEndYmdForDb(_end);
+
     setState(() => _saving = true);
     try {
+      final prefetch = await Future.wait<Object?>([
+        _roomDs.fetchRoomReservationPolicy(selectedRoomId),
+        _ds.canActorApproveForRoom(selectedRoomId),
+      ]);
+      if (!mounted) return;
+      final policy = prefetch[0] as RoomReservationPolicy?;
+      final skipPolicy = prefetch[1] as bool;
+      if (policy != null) {
+        final msg = validateReservationEndAgainstRoomPolicy(
+          endYmdDigits: endYmdForPolicy,
+          policy: policy,
+          skipForPrivilegedUser: skipPolicy,
+        );
+        if (msg != null) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+          return;
+        }
+      }
+
       final payload = <String, dynamic>{
         'title': title,
         'allday_yn': _allDay ? 'Y' : 'N',
@@ -393,7 +419,7 @@ class _ReservationCreatePageState extends State<ReservationCreatePage> {
               if (_allDay && _expanded == _ExpandedPicker.start)
                 Padding(
                   padding: const EdgeInsets.only(bottom: 8),
-                  child: _AllDayCalendarPicker(
+                  child: AllDayCalendarPicker(
                     key: ValueKey<int>(_startDayPickerKey),
                     selectedDate: DateTime(_start.year, _start.month, _start.day),
                     onDateChanged: _applyAllDayStartCalendar,
@@ -417,7 +443,7 @@ class _ReservationCreatePageState extends State<ReservationCreatePage> {
               if (_allDay && _expanded == _ExpandedPicker.end)
                 Padding(
                   padding: const EdgeInsets.only(bottom: 8),
-                  child: _AllDayCalendarPicker(
+                  child: AllDayCalendarPicker(
                     key: ValueKey<int>(_endDayPickerKey),
                     selectedDate: DateTime(_end.year, _end.month, _end.day),
                     onDateChanged: _applyAllDayEndCalendar,
@@ -577,34 +603,6 @@ class _ReservationCreatePageState extends State<ReservationCreatePage> {
               child: const Center(child: CircularProgressIndicator()),
             ),
         ],
-      ),
-    );
-  }
-}
-
-class _AllDayCalendarPicker extends StatelessWidget {
-  const _AllDayCalendarPicker({
-    super.key,
-    required this.selectedDate,
-    required this.onDateChanged,
-  });
-
-  final DateTime selectedDate;
-  final ValueChanged<DateTime> onDateChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return Material(
-      color: scheme.surfaceContainerHighest.withValues(alpha: 0.35),
-      borderRadius: BorderRadius.circular(12),
-      clipBehavior: Clip.antiAlias,
-      child: CalendarDatePicker(
-        initialDate: selectedDate,
-        currentDate: DateTime.now(),
-        firstDate: DateTime(2020, 1, 1),
-        lastDate: DateTime(2100, 12, 31),
-        onDateChanged: onDateChanged,
       ),
     );
   }

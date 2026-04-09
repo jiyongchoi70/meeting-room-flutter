@@ -1,6 +1,16 @@
 import 'package:intl/intl.dart';
 
-import '../../../../core/repeat_date_ranges.dart';
+import '../../../../core/repeat_date_ranges.dart'
+    show
+        kRepeatCustom,
+        kRepeatDaily,
+        kRepeatMonthly,
+        kRepeatNone,
+        kRepeatUserMonth,
+        kRepeatUserWeek,
+        kRepeatWeekly,
+        ordinalFromDate,
+        parseRepeatEndYmd;
 
 /// 반복 UI 모드. `매주` 는 저장 시 [kRepeatCustom]+[kRepeatUserWeek] 로 매핑.
 enum RepeatUiMode {
@@ -51,6 +61,127 @@ class RepeatScheduleSelection {
     final flags = List<bool>.filled(7, false);
     flags[start.weekday % 7] = true;
     return flags;
+  }
+
+  /// DB에 저장된 반복 메타로 UI 상태 복원 (수정 화면 요약·반복 설정 진입용).
+  factory RepeatScheduleSelection.fromStoredReservation({
+    required DateTime reservationStart,
+    required DateTime reservationEnd,
+    int? repeatId,
+    String? repeatEndYmdRaw,
+    int? repeatCycle,
+    int? repeatUser,
+    List<bool>? weekdayFlags,
+  }) {
+    final flags =
+        (weekdayFlags != null && weekdayFlags.length == 7)
+            ? List<bool>.from(weekdayFlags)
+            : _defaultWeekdayFromStart(reservationStart);
+
+    DateTime untilFromRaw(String? raw, DateTime fallback) {
+      if (raw == null || raw.trim().isEmpty) return fallback;
+      try {
+        final iso = parseRepeatEndYmd(raw.trim());
+        final d = DateTime.parse(iso);
+        return DateTime(d.year, d.month, d.day);
+      } catch (_) {
+        return fallback;
+      }
+    }
+
+    final endDay = DateTime(
+      reservationEnd.year,
+      reservationEnd.month,
+      reservationEnd.day,
+    );
+    final startDay = DateTime(
+      reservationStart.year,
+      reservationStart.month,
+      reservationStart.day,
+    );
+    var until = untilFromRaw(repeatEndYmdRaw, endDay.add(const Duration(days: 30)));
+    if (until.isBefore(startDay)) until = startDay;
+
+    final rid = repeatId;
+    final re = repeatEndYmdRaw?.trim();
+    if (rid == null || rid == kRepeatNone || re == null || re.isEmpty) {
+      return RepeatScheduleSelection.initial(
+        reservationStart: reservationStart,
+        reservationEnd: reservationEnd,
+      );
+    }
+
+    final cycle = repeatCycle ?? 1;
+    final ru = repeatUser;
+
+    switch (rid) {
+      case kRepeatDaily:
+        return RepeatScheduleSelection(
+          mode: RepeatUiMode.daily,
+          repeatUntil: until,
+          dailyInterval: cycle,
+          weekdayFlags: _defaultWeekdayFromStart(reservationStart),
+        );
+      case kRepeatWeekly:
+        final wf = List<bool>.filled(7, false);
+        wf[reservationStart.weekday % 7] = true;
+        return RepeatScheduleSelection(
+          mode: RepeatUiMode.weekly,
+          repeatUntil: until,
+          weeklyInterval: cycle,
+          weekdayFlags: wf,
+        );
+      case kRepeatMonthly:
+        return RepeatScheduleSelection(
+          mode: RepeatUiMode.monthlyByDate,
+          repeatUntil: until,
+          weekdayFlags: _defaultWeekdayFromStart(reservationStart),
+        );
+      case kRepeatCustom:
+        if (ru == kRepeatUserWeek) {
+          return RepeatScheduleSelection(
+            mode: RepeatUiMode.weekly,
+            repeatUntil: until,
+            weeklyInterval: cycle,
+            weekdayFlags: flags,
+          );
+        }
+        if (ru == kRepeatUserMonth) {
+          return RepeatScheduleSelection(
+            mode: RepeatUiMode.monthlyByWeekday,
+            repeatUntil: until,
+            monthlyInterval: cycle,
+            weekdayFlags: _defaultWeekdayFromStart(reservationStart),
+          );
+        }
+        return RepeatScheduleSelection.initial(
+          reservationStart: reservationStart,
+          reservationEnd: reservationEnd,
+        );
+      default:
+        return RepeatScheduleSelection.initial(
+          reservationStart: reservationStart,
+          reservationEnd: reservationEnd,
+        );
+    }
+  }
+
+  /// 반복 해제 시 저장 페이로드용(빈 문자열 → RPC에서 NULL 처리).
+  static Map<String, dynamic> clearedRepeatPayloadFields() {
+    return {
+      'repeat_id': '',
+      'repeat_end_ymd': '',
+      'repeat_cycle': '',
+      'repeat_user': '',
+      'repeat_condition': '',
+      'sun_yn': 'N',
+      'mon_yn': 'N',
+      'tue_yn': 'N',
+      'wed_yn': 'N',
+      'thu_yn': 'N',
+      'fri_yn': 'N',
+      'sat_yn': 'N',
+    };
   }
 
   factory RepeatScheduleSelection.initial({
